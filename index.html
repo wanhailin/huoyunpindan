@@ -100,7 +100,6 @@ input{
 }
 </style>
 
-<!-- 密钥配置 -->
 <script>
 window._AMapSecurityConfig = {
     securityJsCode:'7b3dcbe878f4657447ba27559babd2d4'
@@ -114,19 +113,19 @@ window._AMapSecurityConfig = {
 
     <div class="item">
         <label>A 主单装货地</label>
-        <input type="text" id="addrA" placeholder="例：贵阳市观山湖区">
+        <input type="text" id="addrA" placeholder="例：贵州省贵阳市观山湖区西南商贸城">
     </div>
     <div class="item">
         <label>B 主单卸货地</label>
-        <input type="text" id="addrB" placeholder="例：遵义播州区">
+        <input type="text" id="addrB" placeholder="例：贵州省遵义播州区马家湾">
     </div>
     <div class="item">
         <label>C 拼单装货地（无拼单留空）</label>
-        <input type="text" id="addrC" placeholder="例：贵阳市白云区">
+        <input type="text" id="addrC" placeholder="例：贵州省贵阳市白云区艳山红镇">
     </div>
     <div class="item">
         <label>D 拼单卸货地（无拼单留空）</label>
-        <input type="text" id="addrD" placeholder="例：遵义汇川区">
+        <input type="text" id="addrD" placeholder="例：贵州省遵义汇川区董公寺镇">
     </div>
 
     <button class="btn" id="queryBtn" onclick="searchAllRoute()">查询路线，计算里程</button>
@@ -135,19 +134,19 @@ window._AMapSecurityConfig = {
     <div class="result-box" id="resultBox">
         <div class="line">
             <span>A→B 原主单里程：</span>
-            <span id="kmAB">0.0 km</span>
+            <span id="kmAB">-- km</span>
         </div>
         <div class="line">
             <span>A→C 主装→拼装：</span>
-            <span id="kmAC">0.0 km</span>
+            <span id="kmAC">-- km</span>
         </div>
         <div class="line">
             <span>C→D 拼装→拼卸：</span>
-            <span id="kmCD">0.0 km</span>
+            <span id="kmCD">-- km</span>
         </div>
         <div class="line">
             <span>D→B 拼卸→主卸：</span>
-            <span id="kmDB">0.0 km</span>
+            <span id="kmDB">-- km</span>
         </div>
         <div class="line red">
             <span>✅额外绕行总里程（可手动修改）：</span>
@@ -186,7 +185,7 @@ window._AMapSecurityConfig = {
         <div id="tipDom" class="warn"></div>
     </div>
     <div class="tip">
-        💡提示：尽量填写【省+市+区/标志性物流点】；只填市区名称也可识别；地址解析失败请补充地名
+        💡提示：地址建议带上【贵州省】前缀；Github.io网络不稳定，查询卡住刷新页面重试
     </div>
 </div>
 
@@ -196,23 +195,33 @@ const priceLocalRoad = 1.5;
 const incomeLimit = 200;
 let isRequesting = false;
 
-// 【优化核心】采用keyword模式，支持区级宽泛地址识别
-function getDistance(startAddr, endAddr) {
+//地理编码：地址转经纬度
+function geoCode(address) {
     return new Promise((resolve) => {
-        const drive = new AMap.Driving();
-        // 关键词搜索，大幅提升市区、区级地址识别成功率
-        drive.search(
-            {keyword: startAddr},
-            {keyword: endAddr},
-            function(status, res) {
-                if(status === 'complete' && res.routes && res.routes.length>0){
-                    resolve(res.routes[0].distance / 1000);
-                }else{
-                    resolve(0);
-                }
+        const geocoder = new AMap.Geocoder();
+        geocoder.getLocation(address, function(status, result) {
+            if (status === 'complete' && result.geocodes.length) {
+                let loc = result.geocodes[0].location;
+                resolve([loc.lng, loc.lat]);
+            } else {
+                resolve(null);
             }
-        )
+        })
     })
+}
+
+//球面距离粗略计算（公里）
+function getGeoDistance(p1, p2) {
+    if (!p1 || !p2) return 0;
+    const R = 6371;
+    const lng1 = p1[0] * Math.PI / 180;
+    const lat1 = p1[1] * Math.PI / 180;
+    const lng2 = p2[0] * Math.PI / 180;
+    const lat2 = p2[1] * Math.PI / 180;
+    const dLng = lng2 - lng1;
+    const dLat = lat2 - lat1;
+    const a = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
+    return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
 }
 
 async function searchAllRoute(){
@@ -223,7 +232,6 @@ async function searchAllRoute(){
     const D = document.getElementById("addrD").value.trim();
 
     if(!A || !B){
-        alert("请填写主单A、B地址！");
         return;
     }
     isRequesting = true;
@@ -234,38 +242,34 @@ async function searchAllRoute(){
     loading.style.display = "block";
     resultBox.style.display = "none";
 
-    try{
-        //并行请求
-        const [kmAB] = await Promise.all([getDistance(A,B)]);
-        document.getElementById("kmAB").innerText = kmAB.toFixed(1)+" km";
-        if(kmAB <= 0){
-            alert("【A-B地址解析失败】建议补充详细地名（物流园/乡镇）重试");
-        }
+    //获取坐标
+    let pointA = await geoCode(A);
+    let pointB = await geoCode(B);
+    let pointC = C ? await geoCode(C) : null;
+    let pointD = D ? await geoCode(D) : null;
 
-        let kmAC = 0, kmCD = 0, kmDB = 0;
-        if(C && D){
-            //存在拼单，并行查询三段
-            [kmAC, kmCD, kmDB] = await Promise.all([
-                getDistance(A,C),
-                getDistance(C,D),
-                getDistance(D,B)
-            ]);
-        }
-        document.getElementById("kmAC").innerText = kmAC.toFixed(1)+" km";
-        document.getElementById("kmCD").innerText = kmCD.toFixed(1)+" km";
-        document.getElementById("kmDB").innerText = kmDB.toFixed(1)+" km";
+    let kmAB = getGeoDistance(pointA, pointB);
+    let kmAC = getGeoDistance(pointA, pointC);
+    let kmCD = getGeoDistance(pointC, pointD);
+    let kmDB = getGeoDistance(pointD, pointB);
 
+    //渲染结果，失败显示--
+    document.getElementById("kmAB").innerText = kmAB>0 ? kmAB.toFixed(1)+" km" : "-- km";
+    document.getElementById("kmAC").innerText = kmAC>0 ? kmAC.toFixed(1)+" km" : "-- km";
+    document.getElementById("kmCD").innerText = kmCD>0 ? kmCD.toFixed(1)+" km" : "-- km";
+    document.getElementById("kmDB").innerText = kmDB>0 ? kmDB.toFixed(1)+" km" : "-- km";
+
+    let extra = 0;
+    if(kmAC>0 && kmCD>0 && kmDB>0 && kmAB>0){
         const totalPick = kmAC + kmCD + kmDB;
-        const extra = Math.max(0, totalPick - kmAB);
-        document.getElementById("extraKm").value = extra.toFixed(1);
-        resultBox.style.display = "block";
-    }catch(err){
-        alert("地址解析失败，请完善地址信息重试！");
-    }finally{
-        loading.style.display = "none";
-        btn.disabled = false;
-        isRequesting = false;
+        extra = Math.max(0, totalPick - kmAB);
     }
+    document.getElementById("extraKm").value = extra.toFixed(1);
+    resultBox.style.display = "block";
+
+    loading.style.display = "none";
+    btn.disabled = false;
+    isRequesting = false;
 }
 
 //收益计算
