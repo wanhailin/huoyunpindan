@@ -28,13 +28,6 @@ h2{
     color:#111;
     font-size:19px;
 }
-#mapContainer{
-    width:100%;
-    height:280px;
-    border-radius:12px;
-    margin-top:16px;
-    border:1px solid #eee;
-}
 .item{
     margin-bottom:14px;
 }
@@ -61,6 +54,9 @@ input{
     font-size:17px;
     margin:10px 0;
 }
+.btn:disabled{
+    background:#88a8e0;
+}
 .btn-green{
     background:#0a8046;
 }
@@ -68,7 +64,8 @@ input{
     padding:16px;
     background:#f8f9fa;
     border-radius:12px;
-    margin-top:8px;
+    margin-top:12px;
+    display:none;
 }
 .line{
     display:flex;
@@ -94,22 +91,21 @@ input{
     margin-top:12px;
     line-height:1.4;
 }
-.loading{
-    color:#2373ea;
+.load-text{
     text-align:center;
-    padding:8px;
+    color:#2373ea;
+    font-size:16px;
+    margin:10px 0;
     display:none;
-    font-size:15px;
 }
 </style>
 
-<!-- 安全密钥 -->
+<!-- 密钥配置 -->
 <script>
 window._AMapSecurityConfig = {
     securityJsCode:'7b3dcbe878f4657447ba27559babd2d4'
 }
 </script>
-<!-- Web JS Key -->
 <script src="https://webapi.amap.com/maps?v=2.0&key=3d27557bb7b7cfad571313afb5beedd5"></script>
 </head>
 <body>
@@ -118,28 +114,25 @@ window._AMapSecurityConfig = {
 
     <div class="item">
         <label>A 主单装货地</label>
-        <input type="text" id="addrA" placeholder="例如：贵阳市白云区">
+        <input type="text" id="addrA" placeholder="例：贵阳市观山湖区西南商贸城">
     </div>
     <div class="item">
         <label>B 主单卸货地</label>
-        <input type="text" id="addrB" placeholder="例如：遵义播州区">
+        <input type="text" id="addrB" placeholder="例：遵义播州区马家湾">
     </div>
     <div class="item">
         <label>C 拼单装货地（无拼单留空）</label>
-        <input type="text" id="addrC" placeholder="没有拼单无需填写">
+        <input type="text" id="addrC" placeholder="例：贵阳市白云区艳山红镇">
     </div>
     <div class="item">
         <label>D 拼单卸货地（无拼单留空）</label>
-        <input type="text" id="addrD" placeholder="没有拼单无需填写">
+        <input type="text" id="addrD" placeholder="例：遵义汇川区董公寺镇">
     </div>
 
-    <button class="btn" onclick="searchAllRoute()">查询路线，计算里程</button>
-    <div class="loading" id="loadingTxt">路线查询中，请等待...</div>
+    <button class="btn" id="queryBtn" onclick="searchAllRoute()">查询路线，计算里程</button>
+    <div class="load-text" id="loadingText">路线查询中，请等待...</div>
 
-    <!-- 地图在下方 -->
-    <div id="mapContainer"></div>
-
-    <div class="result-box" id="resultBox" style="display:none;">
+    <div class="result-box" id="resultBox">
         <div class="line">
             <span>A→B 原主单里程：</span>
             <span id="kmAB">0.0 km</span>
@@ -190,8 +183,10 @@ window._AMapSecurityConfig = {
             <span>预估净收益：</span>
             <span id="netProfit">0.00 元</span>
         </div>
-        <div id="tipText" class="warn"></div>
-        <div class="tip">规则：净收益≥200元建议接单；本地直接打开html大概率地图失效，部署网页链接正常使用<br>计算逻辑：A→C→D→B总里程 - A→B原里程 = 额外绕行里程</div>
+        <div id="tipDom" class="warn"></div>
+    </div>
+    <div class="tip">
+        规则：净收益≥200元建议承接拼单；地址尽量补齐乡镇名称，提升查询速度
     </div>
 </div>
 
@@ -199,100 +194,74 @@ window._AMapSecurityConfig = {
 const priceHighway = 2.4;
 const priceLocalRoad = 1.5;
 const incomeLimit = 200;
+let isRequesting = false;
 
-let map;
-let driving;
-let mainRoute = null;
-let pickRoute = null;
-
-window.onload = function(){
-    map = new AMap.Map('mapContainer', {
-        zoom: 8,
-        center: [106.63, 26.66]
-    });
-    driving = new AMap.Driving({
-        map: map,
-        policy: AMap.DrivingPolicy.LEAST_TIME
-    });
+// 距离查询封装
+function getDistance(start, end) {
+    return new Promise((resolve) => {
+        const drive = new AMap.Driving();
+        drive.search(start, end, function(status, res) {
+            if(status === 'complete'){
+                resolve(res.routes[0].distance / 1000);
+            }else{
+                resolve(0);
+            }
+        })
+    })
 }
 
-//清空地图路线
-function clearRoutes(){
-    if(mainRoute) mainRoute.remove();
-    if(pickRoute) pickRoute.remove();
-}
-
-//批量查询路线
-function searchAllRoute(){
-    const loading = document.getElementById("loadingTxt");
-    loading.style.display = "block";
-    document.getElementById("resultBox").style.display = "none";
-    clearRoutes();
-
+async function searchAllRoute(){
+    if(isRequesting) return;
     const A = document.getElementById("addrA").value.trim();
     const B = document.getElementById("addrB").value.trim();
     const C = document.getElementById("addrC").value.trim();
     const D = document.getElementById("addrD").value.trim();
 
     if(!A || !B){
-        alert("请填写主单装货地、卸货地！");
-        loading.style.display = "none";
+        alert("请填写主单A、B地址！");
         return;
     }
+    isRequesting = true;
+    const btn = document.getElementById("queryBtn");
+    const loading = document.getElementById("loadingText");
+    const resultBox = document.getElementById("resultBox");
+    btn.disabled = true;
+    loading.style.display = "block";
+    resultBox.style.display = "none";
 
-    //第一步 查询主单A→B
-    driving.search(A,B,function(status,result){
-        if(status !== 'complete'){
-            loading.style.display = "none";
-            alert("主单路线查询失败，请检查地址");
-            return;
+    // 设置10秒超时保护
+    const timeoutPromise = new Promise((_, reject) => setTimeout(()=>reject("超时"),10000));
+    try{
+        //并行请求
+        const promiseList = [];
+        promiseList.push(getDistance(A,B));
+        let kmAC = 0, kmCD = 0, kmDB = 0;
+        const [kmAB] = await Promise.race([Promise.all(promiseList), timeoutPromise]);
+        document.getElementById("kmAB").innerText = kmAB.toFixed(1)+" km";
+
+        if(C && D){
+            //存在拼单，并行查询三段
+            [kmAC, kmCD, kmDB] = await Promise.all([
+                getDistance(A,C),
+                getDistance(C,D),
+                getDistance(D,B)
+            ]);
         }
-        const kmAB = (result.routes[0].distance / 1000).toFixed(1);
-        document.getElementById("kmAB").innerText = kmAB + " km";
-        mainRoute = result.routes[0];
+        document.getElementById("kmAC").innerText = kmAC.toFixed(1)+" km";
+        document.getElementById("kmCD").innerText = kmCD.toFixed(1)+" km";
+        document.getElementById("kmDB").innerText = kmDB.toFixed(1)+" km";
 
-        //无拼单情况
-        if(!C || !D){
-            document.getElementById("kmAC").innerText = "0.0 km";
-            document.getElementById("kmCD").innerText = "0.0 km";
-            document.getElementById("kmDB").innerText = "0.0 km";
-            document.getElementById("extraKm").value = 0;
-            loading.style.display = "none";
-            document.getElementById("resultBox").style.display = "block";
-            return;
-        }
-
-        //有拼单：分段查询 A-C ,C-D,D-B
-        searchSegDistance(A,C,(ac)=>{
-            document.getElementById("kmAC").innerText = ac.toFixed(1)+" km";
-            searchSegDistance(C,D,(cd)=>{
-                document.getElementById("kmCD").innerText = cd.toFixed(1)+" km";
-                searchSegDistance(D,B,(db)=>{
-                    document.getElementById("kmDB").innerText = db.toFixed(1)+" km";
-                    const totalPick = ac + cd + db;
-                    const extra = Math.max(0, totalPick - parseFloat(kmAB));
-                    document.getElementById("extraKm").value = extra.toFixed(1);
-
-                    //绘制拼单整条线路 A-C-D-B
-                    driving.search([A,C,D,B],function(s,res){
-                        if(s === 'complete') pickRoute = res.routes[0];
-                    })
-                    loading.style.display = "none";
-                    document.getElementById("resultBox").style.display = "block";
-                })
-            })
-        })
-    })
-}
-
-//分段距离查询工具
-function searchSegDistance(o,d,callback){
-    const tempDrive = new AMap.Driving();
-    tempDrive.search(o,d,function(status,res){
-        let km = 0;
-        if(status === 'complete') km = res.routes[0].distance / 1000;
-        callback(km);
-    })
+        const totalPick = kmAC + kmCD + kmDB;
+        const extra = Math.max(0, totalPick - kmAB);
+        document.getElementById("extraKm").value = extra.toFixed(1);
+        resultBox.style.display = "block";
+    }catch(err){
+        alert("查询超时，请检查地址完整性，切换网络重试！");
+    }finally{
+        loading.style.display = "none";
+        btn.disabled = false;
+        isRequesting = false;
+    }
 }
 
 //收益计算
@@ -314,8 +283,8 @@ function calcProfit(){
     document.getElementById("totalCost").innerText = totalCost.toFixed(2)+" 元";
     document.getElementById("netProfit").innerText = profit.toFixed(2)+" 元";
 
-    const tipDom = document.getElementById("tipText");
-    if(profit >= 200){
+    const tipDom = document.getElementById("tipDom");
+    if(profit >= incomeLimit){
         tipDom.className = "warn ok";
         tipDom.innerText = "✅收益达标，可以承接拼单";
     }else{
