@@ -117,7 +117,7 @@ window._AMapSecurityConfig = {
     </div>
     <div class="item">
         <label>B 主单卸货地</label>
-        <input type="text" id="addrB" placeholder="例：贵州省遵义播州区马家湾">
+        <input type="text" id="addrB" placeholder="例：贵州省遵义市播州区马家湾">
     </div>
     <div class="item">
         <label>C 拼单装货地（无拼单留空）</label>
@@ -125,7 +125,7 @@ window._AMapSecurityConfig = {
     </div>
     <div class="item">
         <label>D 拼单卸货地（无拼单留空）</label>
-        <input type="text" id="addrD" placeholder="例：贵州省遵义汇川区董公寺镇">
+        <input type="text" id="addrD" placeholder="例：贵州省遵义市汇川区董公寺镇">
     </div>
 
     <button class="btn" id="queryBtn" onclick="searchAllRoute()">查询路线，计算里程</button>
@@ -185,7 +185,7 @@ window._AMapSecurityConfig = {
         <div id="tipDom" class="warn"></div>
     </div>
     <div class="tip">
-        💡提示：地址建议带上【贵州省】前缀；Github.io网络不稳定，查询卡住刷新页面重试
+        💡提示：部署在Gitee Pages才能稳定联网计算；Github.io境外域名会被高德拦截地址解析
     </div>
 </div>
 
@@ -195,45 +195,31 @@ const priceLocalRoad = 1.5;
 const incomeLimit = 200;
 let isRequesting = false;
 
-//地理编码：地址转经纬度
-function geoCode(address) {
+function getRoadDistance(startName, endName) {
     return new Promise((resolve) => {
-        const geocoder = new AMap.Geocoder();
-        geocoder.getLocation(address, function(status, result) {
-            if (status === 'complete' && result.geocodes.length) {
-                let loc = result.geocodes[0].location;
-                resolve([loc.lng, loc.lat]);
+        const drive = new AMap.Driving({
+            policy: AMap.DrivingPolicy.LEAST_TIME
+        });
+        drive.search(startName, endName, function(status, result) {
+            if (status === 'complete' && result.routes && result.routes.length > 0) {
+                let km = result.routes[0].distance / 1000;
+                resolve(km);
             } else {
-                resolve(null);
+                resolve(0);
             }
         })
     })
 }
 
-//球面距离粗略计算（公里）
-function getGeoDistance(p1, p2) {
-    if (!p1 || !p2) return 0;
-    const R = 6371;
-    const lng1 = p1[0] * Math.PI / 180;
-    const lat1 = p1[1] * Math.PI / 180;
-    const lng2 = p2[0] * Math.PI / 180;
-    const lat2 = p2[1] * Math.PI / 180;
-    const dLng = lng2 - lng1;
-    const dLat = lat2 - lat1;
-    const a = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
-    return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
-}
-
-async function searchAllRoute(){
-    if(isRequesting) return;
+async function searchAllRoute() {
+    if (isRequesting) return;
     const A = document.getElementById("addrA").value.trim();
     const B = document.getElementById("addrB").value.trim();
     const C = document.getElementById("addrC").value.trim();
     const D = document.getElementById("addrD").value.trim();
 
-    if(!A || !B){
-        return;
-    }
+    if (!A || !B) return;
+
     isRequesting = true;
     const btn = document.getElementById("queryBtn");
     const loading = document.getElementById("loadingText");
@@ -242,25 +228,18 @@ async function searchAllRoute(){
     loading.style.display = "block";
     resultBox.style.display = "none";
 
-    //获取坐标
-    let pointA = await geoCode(A);
-    let pointB = await geoCode(B);
-    let pointC = C ? await geoCode(C) : null;
-    let pointD = D ? await geoCode(D) : null;
+    let kmAB = await getRoadDistance(A, B);
+    let kmAC = C ? await getRoadDistance(A, C) : 0;
+    let kmCD = (C && D) ? await getRoadDistance(C, D) : 0;
+    let kmDB = D ? await getRoadDistance(D, B) : 0;
 
-    let kmAB = getGeoDistance(pointA, pointB);
-    let kmAC = getGeoDistance(pointA, pointC);
-    let kmCD = getGeoDistance(pointC, pointD);
-    let kmDB = getGeoDistance(pointD, pointB);
-
-    //渲染结果，失败显示--
-    document.getElementById("kmAB").innerText = kmAB>0 ? kmAB.toFixed(1)+" km" : "-- km";
-    document.getElementById("kmAC").innerText = kmAC>0 ? kmAC.toFixed(1)+" km" : "-- km";
-    document.getElementById("kmCD").innerText = kmCD>0 ? kmCD.toFixed(1)+" km" : "-- km";
-    document.getElementById("kmDB").innerText = kmDB>0 ? kmDB.toFixed(1)+" km" : "-- km";
+    document.getElementById("kmAB").innerText = kmAB > 0 ? kmAB.toFixed(1) + " km" : "-- km";
+    document.getElementById("kmAC").innerText = kmAC > 0 ? kmAC.toFixed(1) + " km" : "-- km";
+    document.getElementById("kmCD").innerText = kmCD > 0 ? kmCD.toFixed(1) + " km" : "-- km";
+    document.getElementById("kmDB").innerText = kmDB > 0 ? kmDB.toFixed(1) + " km" : "-- km";
 
     let extra = 0;
-    if(kmAC>0 && kmCD>0 && kmDB>0 && kmAB>0){
+    if (kmAC > 0 && kmCD > 0 && kmDB > 0 && kmAB > 0) {
         const totalPick = kmAC + kmCD + kmDB;
         extra = Math.max(0, totalPick - kmAB);
     }
@@ -272,30 +251,29 @@ async function searchAllRoute(){
     isRequesting = false;
 }
 
-//收益计算
-function calcProfit(){
+function calcProfit() {
     const extraKm = parseFloat(document.getElementById("extraKm").value) || 0;
     const highwayKm = parseFloat(document.getElementById("highwayKm").value) || 0;
     const income = parseFloat(document.getElementById("income").value) || 0;
 
     let localKm = extraKm - highwayKm;
-    if(localKm < 0) localKm = 0;
+    if (localKm < 0) localKm = 0;
 
     const costH = highwayKm * priceHighway;
     const costL = localKm * priceLocalRoad;
     const totalCost = costH + costL;
     const profit = income - totalCost;
 
-    document.getElementById("highwayCost").innerText = costH.toFixed(2)+" 元";
-    document.getElementById("roadCost").innerText = costL.toFixed(2)+" 元";
-    document.getElementById("totalCost").innerText = totalCost.toFixed(2)+" 元";
-    document.getElementById("netProfit").innerText = profit.toFixed(2)+" 元";
+    document.getElementById("highwayCost").innerText = costH.toFixed(2) + " 元";
+    document.getElementById("roadCost").innerText = costL.toFixed(2) + " 元";
+    document.getElementById("totalCost").innerText = totalCost.toFixed(2) + " 元";
+    document.getElementById("netProfit").innerText = profit.toFixed(2) + " 元";
 
     const tipDom = document.getElementById("tipDom");
-    if(profit >= incomeLimit){
+    if (profit >= incomeLimit) {
         tipDom.className = "warn ok";
         tipDom.innerText = "✅收益达标，可以承接拼单";
-    }else{
+    } else {
         tipDom.className = "warn no";
         tipDom.innerText = "❌收益不足200元，不建议接";
     }
