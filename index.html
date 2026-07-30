@@ -114,19 +114,19 @@ window._AMapSecurityConfig = {
 
     <div class="item">
         <label>A 主单装货地</label>
-        <input type="text" id="addrA" placeholder="例：贵阳市观山湖区西南商贸城">
+        <input type="text" id="addrA" placeholder="例：贵阳市观山湖区">
     </div>
     <div class="item">
         <label>B 主单卸货地</label>
-        <input type="text" id="addrB" placeholder="例：遵义播州区马家湾">
+        <input type="text" id="addrB" placeholder="例：遵义播州区">
     </div>
     <div class="item">
         <label>C 拼单装货地（无拼单留空）</label>
-        <input type="text" id="addrC" placeholder="例：贵阳市白云区艳山红镇">
+        <input type="text" id="addrC" placeholder="例：贵阳市白云区">
     </div>
     <div class="item">
         <label>D 拼单卸货地（无拼单留空）</label>
-        <input type="text" id="addrD" placeholder="例：遵义汇川区董公寺镇">
+        <input type="text" id="addrD" placeholder="例：遵义汇川区">
     </div>
 
     <button class="btn" id="queryBtn" onclick="searchAllRoute()">查询路线，计算里程</button>
@@ -186,7 +186,7 @@ window._AMapSecurityConfig = {
         <div id="tipDom" class="warn"></div>
     </div>
     <div class="tip">
-        规则：净收益≥200元建议承接拼单；地址尽量补齐乡镇名称，提升查询速度
+        💡提示：尽量填写【省+市+区/标志性物流点】；只填市区名称也可识别；地址解析失败请补充地名
     </div>
 </div>
 
@@ -196,17 +196,22 @@ const priceLocalRoad = 1.5;
 const incomeLimit = 200;
 let isRequesting = false;
 
-// 距离查询封装
-function getDistance(start, end) {
+// 【优化核心】采用keyword模式，支持区级宽泛地址识别
+function getDistance(startAddr, endAddr) {
     return new Promise((resolve) => {
         const drive = new AMap.Driving();
-        drive.search(start, end, function(status, res) {
-            if(status === 'complete'){
-                resolve(res.routes[0].distance / 1000);
-            }else{
-                resolve(0);
+        // 关键词搜索，大幅提升市区、区级地址识别成功率
+        drive.search(
+            {keyword: startAddr},
+            {keyword: endAddr},
+            function(status, res) {
+                if(status === 'complete' && res.routes && res.routes.length>0){
+                    resolve(res.routes[0].distance / 1000);
+                }else{
+                    resolve(0);
+                }
             }
-        })
+        )
     })
 }
 
@@ -229,16 +234,15 @@ async function searchAllRoute(){
     loading.style.display = "block";
     resultBox.style.display = "none";
 
-    // 设置10秒超时保护
-    const timeoutPromise = new Promise((_, reject) => setTimeout(()=>reject("超时"),10000));
     try{
         //并行请求
-        const promiseList = [];
-        promiseList.push(getDistance(A,B));
-        let kmAC = 0, kmCD = 0, kmDB = 0;
-        const [kmAB] = await Promise.race([Promise.all(promiseList), timeoutPromise]);
+        const [kmAB] = await Promise.all([getDistance(A,B)]);
         document.getElementById("kmAB").innerText = kmAB.toFixed(1)+" km";
+        if(kmAB <= 0){
+            alert("【A-B地址解析失败】建议补充详细地名（物流园/乡镇）重试");
+        }
 
+        let kmAC = 0, kmCD = 0, kmDB = 0;
         if(C && D){
             //存在拼单，并行查询三段
             [kmAC, kmCD, kmDB] = await Promise.all([
@@ -256,7 +260,7 @@ async function searchAllRoute(){
         document.getElementById("extraKm").value = extra.toFixed(1);
         resultBox.style.display = "block";
     }catch(err){
-        alert("查询超时，请检查地址完整性，切换网络重试！");
+        alert("地址解析失败，请完善地址信息重试！");
     }finally{
         loading.style.display = "none";
         btn.disabled = false;
